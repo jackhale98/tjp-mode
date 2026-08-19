@@ -41,10 +41,16 @@
 ;; - Comment handling
 ;; - Optional whitespace cleanup on save
 ;;
-;; Usage:
+;; Installation:
+;;   git clone https://github.com/jackhale98/tjp-mode.git
+;;   (add-to-list 'load-path "/path/to/tjp-mode")
 ;;   (require 'tjp-mode)
-;;   (add-to-list 'auto-mode-alist '("\\.tjp\\'" . tjp-mode))
-;;   (add-to-list 'auto-mode-alist '("\\.tji\\'" . tjp-mode))
+;;   ;; .tjp and .tji files auto-activate - no auto-mode-alist entry needed
+;;
+;;   Evil, Doom and Spacemacs users get `SPC m' (or `,') bindings
+;;   automatically: `tjp-mode' loads `tjp-evil' when it is on the load
+;;   path, and that file does nothing unless evil is present.  See the
+;;   README for straight.el, elpaca, package-vc and Doom recipes.
 ;;
 ;; Key Bindings:
 ;;   C-c C-c     - Compile project
@@ -89,7 +95,8 @@
 (require 'cl-lib)
 
 (declare-function org-read-date "org" (&optional with-time to-time from-string prompt))
-(defvar yas-snippet-dirs)
+(declare-function define-auto-insert "autoinsert" (condition action &optional after))
+(defvar projectile-project-root-files)
 
 ;; Customization Group
 ;; ============================================================================
@@ -2334,6 +2341,53 @@ Key bindings:
 
 ;;;###autoload
 (add-to-list 'auto-mode-alist '("\\.tji\\'" . tjp-mode))
+
+;; ============================================================================
+;; OPTIONAL INTEGRATIONS
+;; ============================================================================
+
+;; Projectile: treat a directory that holds project.tjp as a project root.
+(with-eval-after-load 'projectile
+  (add-to-list 'projectile-project-root-files "project.tjp"))
+
+;; Skeleton for new .tjp files.  This only fires for users who have
+;; enabled `auto-insert-mode'; the result compiles with tj3 as it stands,
+;; which needs a project, a resource, a task and a named report.
+(with-eval-after-load 'autoinsert
+  (define-auto-insert
+    '("\\.tjp\\'" . "TaskJuggler Project Template")
+    '("Project ID: "
+      "project " str " \"" (read-string "Project title: ") "\" "
+      (format-time-string "%Y-%m-%d") " - "
+      (format-time-string "%Y-%m-%d" (time-add (current-time) (days-to-time 365))) " {\n"
+      "  timezone \"UTC\"\n"
+      "  timeformat \"%Y-%m-%d\"\n"
+      "  currency \"USD\"\n"
+      "}\n"
+      "\n"
+      "# Resources\n"
+      "resource me \"" (user-full-name) "\"\n"
+      "\n"
+      "# Tasks\n"
+      "task start \"Get started\" {\n"
+      "  effort 1d\n"
+      "  allocate me\n"
+      "}\n"
+      "\n"
+      "# Reports\n"
+      ;; The quoted name - not the ID - is the base name of the generated
+      ;; file, so this report is written to "Project Overview.html".
+      "taskreport overview \"Project Overview\" {\n"
+      "  formats html\n"
+      "  columns name, start, end, effort, chart\n"
+      "  loadunit days\n"
+      "  hideresource 1\n"
+      "}\n")))
+
+;; Evil / Doom / Spacemacs keybindings.  Soft require: a single-file
+;; installation of tjp-mode.el alone still works, it just has no evil
+;; layer.  `tjp-evil' itself is inert unless evil is loaded.
+(require 'tjp-evil nil t)
 
 (provide 'tjp-mode)
 

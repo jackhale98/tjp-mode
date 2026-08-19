@@ -2,6 +2,11 @@
 
 Audit of `tjp-mode.el` (1832 lines) and `tjp-mode-doom.el` (189 lines).
 
+> `tjp-mode-doom.el` has since been replaced by `tjp-evil.el`, which the
+> mode loads itself so that a git install needs no files copied into your
+> configuration. References to the old file below are to the audited
+> version.
+
 Everything below was checked against a real toolchain rather than from memory:
 **Emacs 30.1**, **TaskJuggler 3.8.4** (`tj3`, `tj3man`), and the TaskJuggler
 sources/manual (`ProjectFileScanner.rb`, `MessageHandler.rb`, `Tj3.rb`,

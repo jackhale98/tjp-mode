@@ -14,8 +14,7 @@ require the TaskJuggler command line tools (`tj3`, `tj3man`).
 
 - [Features](#features)
 - [Requirements](#requirements)
-- [Installation — vanilla Emacs](#installation--vanilla-emacs)
-- [Installation — Doom Emacs](#installation--doom-emacs)
+- [Installation](#installation)
 - [Quick start](#quick-start)
 - [Key bindings](#key-bindings)
 - [Customization](#customization)
@@ -52,114 +51,105 @@ require the TaskJuggler command line tools (`tj3`, `tj3man`).
 * Optional: `company` (completion UI), `flycheck` (on-the-fly checking),
   `yasnippet`, `org` (date picker for `C-c C-d`).
 
-## Installation — vanilla Emacs
+## Installation
 
-### Manual
+The package is two files, `tjp-mode.el` and `tjp-evil.el`. Installing it from
+git gives you both, and that is all you need: `tjp-mode` loads `tjp-evil`
+itself, and `tjp-evil` stays inert unless evil is present. Nothing has to be
+copied into your configuration.
 
-```sh
-mkdir -p ~/.emacs.d/lisp
-cp tjp-mode.el ~/.emacs.d/lisp/
+### From source
+
+```bash
+git clone https://github.com/jackhale98/tjp-mode.git
 ```
+
+Add to your init file:
 
 ```elisp
-;; ~/.emacs.d/init.el
-(add-to-list 'load-path "~/.emacs.d/lisp")
+(add-to-list 'load-path "/path/to/tjp-mode")
 (require 'tjp-mode)
+;; .tjp and .tji files auto-activate — no auto-mode-alist needed
 ```
 
-`tjp-mode` registers itself for `.tjp` and `.tji` files, so no `auto-mode-alist`
-entry is needed.
-
-### With `use-package`
+### use-package
 
 ```elisp
 (use-package tjp-mode
-  :load-path "~/.emacs.d/lisp"
-  :mode (("\\.tjp\\'" . tjp-mode)
-         ("\\.tji\\'" . tjp-mode))
-  :custom
-  (tjp-compiler-command "tj3")
-  (tjp-man-command "tj3man")
-  (tjp-indent-offset 2)
-  ;; (tjp-auto-validate t)   ; run tj3 --check-syntax after every save
-  )
+  :load-path "/path/to/tjp-mode")
 ```
 
-### With `straight.el` or `elpaca`
+### straight.el / elpaca
 
 ```elisp
 ;; straight.el
-(straight-use-package
- '(tjp-mode :host github :repo "jackhale98/tjp-mode" :files ("tjp-mode.el")))
+(use-package tjp-mode
+  :straight (:host github :repo "jackhale98/tjp-mode"
+             :files ("*.el")))
 
 ;; elpaca
-(elpaca (tjp-mode :host github :repo "jackhale98/tjp-mode" :files ("tjp-mode.el")))
+(use-package tjp-mode
+  :ensure (:host github :repo "jackhale98/tjp-mode"
+           :files ("*.el")))
 ```
 
-### With `package-vc` (Emacs 29+)
+### package-vc (Emacs 29+)
 
 ```elisp
 (package-vc-install '(tjp-mode :url "https://github.com/jackhale98/tjp-mode"))
 ```
 
+### Doom Emacs
+
+Add to `~/.config/doom/packages.el`:
+
+```elisp
+(package! tjp-mode
+  :recipe (:host github :repo "jackhale98/tjp-mode"
+           :files ("*.el")))
+```
+
+Add to `~/.config/doom/config.el`:
+
+```elisp
+(use-package! tjp-mode
+  :mode (("\\.tjp\\'" . tjp-mode)
+         ("\\.tji\\'" . tjp-mode)))
+```
+
+`tjp-mode.el` already requires `tjp-evil` (`SPC m` keybindings) internally — no
+`:config` block needed.
+
+Then run `doom sync`.
+
+### Updating
+
+```bash
+cd /path/to/tjp-mode && git pull      # from source
+```
+
+`M-x straight-pull-package RET tjp-mode`, `M-x elpaca-update RET tjp-mode`,
+`M-x package-vc-upgrade RET tjp-mode`, or `doom upgrade` for the others.
+
 ### Optional extras
 
 ```elisp
-(add-hook 'tjp-mode-hook #'company-mode)   ; completion popup
+(add-hook 'tjp-mode-hook #'company-mode)   ; completion popup (uses capf)
 (add-hook 'tjp-mode-hook #'flycheck-mode)  ; on-the-fly tj3 --check-syntax
+(add-hook 'doom-first-file-hook #'auto-insert-mode) ; .tjp file template
 ```
 
-## Installation — Doom Emacs
+The `.tjp` template produces a skeleton that compiles as-is — `tj3` needs at
+least one task, one resource and a named report, and the template provides all
+three.
 
-`tjp-mode-doom.el` is the Doom layer: localleader bindings, evil bindings,
-which-key labels, a company backend, projectile and auto-insert integration.
+### Building from a clone
 
-### 1. Put both files where Doom can load them
-
-```sh
-mkdir -p ~/.config/doom/lisp
-cp tjp-mode.el      ~/.config/doom/lisp/
-cp tjp-mode-doom.el ~/.config/doom/lisp/
+```bash
+make compile   # byte-compile, warnings are errors
+make lint      # checkdoc
+make clean
 ```
-
-(Use `~/.doom.d/` if that is where your config lives.) The layer loads the mode
-with `:load-path "~/.config/doom/lisp"` — adjust that line if you chose a
-different directory.
-
-### 2. Load the layer from `config.el`
-
-```elisp
-;; ~/.config/doom/config.el
-(load! "lisp/tjp-mode-doom")
-```
-
-### 3. Reload
-
-`M-x doom/reload` (`SPC h r r`), or restart Emacs. Open a `.tjp` file and check
-that `SPC m` shows the TaskJuggler menu.
-
-### Alternative: let Doom's package manager own it
-
-```elisp
-;; ~/.config/doom/packages.el
-(package! tjp-mode
-  :recipe (:host github :repo "jackhale98/tjp-mode" :files ("tjp-mode.el")))
-```
-
-Then remove the `:load-path` line from `tjp-mode-doom.el` and run `doom sync`.
-
-### Doom notes
-
-* The `.tjp` file template needs auto-insert, which Doom does not enable:
-
-  ```elisp
-  (add-hook 'doom-first-file-hook #'auto-insert-mode)
-  ```
-
-  The generated skeleton compiles as-is (`tj3` needs at least one task, one
-  resource and a named report, and the template provides all three).
-* Evil users get `]]` / `[[` block motion, `gd` for definitions, `K` for
-  `tj3man` help, and `za` / `zm` / `zr` for folding.
 
 ## Quick start
 
@@ -231,7 +221,12 @@ taskreport overview "Project Overview" {
 Unbound but available: `tjp-expand-macro-at-point`, `tjp-find-macro-definition`,
 `tjp-insert-datetime`, `tjp-insert-date`.
 
-### Doom localleader (`SPC m`)
+### Evil, Doom and Spacemacs
+
+`tjp-evil.el` installs the same tree twice: under `SPC m` when general.el is
+loaded (Doom, Spacemacs) and under `,` for every other evil user. Normal state
+also gets `gd` / `gD` (definition, references), `K` (tj3man), `]]` / `[[` (block
+motion) and `za` / `zm` / `zr` (folding).
 
 | Prefix | Key | Command |
 | --- | --- | --- |
@@ -346,7 +341,8 @@ layer already does this for files over 1 MB.
 | File | Purpose |
 | --- | --- |
 | `tjp-mode.el` | The major mode |
-| `tjp-mode-doom.el` | Doom Emacs bindings and integrations |
+| `tjp-evil.el` | Evil / Doom / Spacemacs keybindings, loaded automatically |
+| `Makefile` | `make compile`, `make lint`, `make clean` |
 | `AUDIT.md` | Audit of the previous version: every bug found, and how it was fixed |
 
 ## License

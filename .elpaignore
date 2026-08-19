@@ -1,0 +1,5 @@
+.github/
+Makefile
+AUDIT.md
+melpa-recipe.el
+*.elc
