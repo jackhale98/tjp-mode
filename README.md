@@ -18,6 +18,8 @@ require the TaskJuggler command line tools (`tj3`, `tj3man`).
 - [Quick start](#quick-start)
 - [Key bindings](#key-bindings)
 - [Dependency and successor chains](#dependency-and-successor-chains)
+- [Critical path](#critical-path)
+- [Navigator](#navigator)
 - [Formatting](#formatting)
 - [Customization](#customization)
 - [Multi-file projects](#multi-file-projects)
@@ -37,7 +39,7 @@ require the TaskJuggler command line tools (`tj3`, `tj3man`).
 | Completion | `completion-at-point` over keywords and every ID in the project, cached so it stays cheap in large files |
 | Documentation | `tj3man` for the keyword at point, falling back to the online manual |
 | Compilation | `tj3` through `compile`, with error patterns wired into `compilation-error-regexp-alist`; async syntax check; optional flycheck checker |
-| Analysis | Structure browser, dependency **and successor** chains, resource allocation summary, project statistics |
+| Analysis | Structure navigator, dependency **and successor** chains, **critical path**, resource allocation summary, project statistics |
 | Formatting | `tjp-format-buffer` applies the house layout; tj3 ships no formatter of its own |
 | Templates | Task / resource / report insertion that nests correctly and follows TJ3's own syntax rules |
 
@@ -213,7 +215,8 @@ taskreport overview "Project Overview" {
 | `C-c C-i` | `tjp-insert-task` |
 | `C-c C-r` / `C-c C-R` | `tjp-insert-resource` / `tjp-insert-report` |
 | `C-c C-d` | `tjp-insert-date-prompt` |
-| `C-c C-s` | `tjp-show-structure` |
+| `C-c C-s` | `tjp-toggle-structure` (navigator, toggles) |
+| `C-c C-x` | `tjp-toggle-critical-path` |
 | `C-c C-y` | `tjp-show-dependencies` (what this task waits for) |
 | `C-c C-u` | `tjp-show-successors` (what waits for this task) |
 | `C-c C-q` | `tjp-format-buffer` |
@@ -247,7 +250,8 @@ so evil's reverse find-char still works.
 | `f` fold | `f` `a` `u` `m` | toggle / fold all / unfold all / `hs-minor-mode` |
 | `i` insert | `t` `r` `R` | task / resource / report |
 | | `d` `D` | date (picker) / datetime |
-| `s` structure | `s` `d` `n` | structure / dependencies / successors |
+| `s` structure | `s` `d` `n` | navigator (toggle) / dependencies / successors |
+| | `c` | critical path (toggle) |
 | | `a` `=` | resource allocation / statistics |
 | `=` format | | `tjp-format-buffer` |
 | `M` macro | `e` `d` | expand / goto definition |
@@ -270,6 +274,9 @@ so evil's reverse find-char still works.
 | `tjp-cleanup-whitespace-on-save` | `t` | Delete trailing whitespace on save, never inside strings |
 | `tjp-evil-localleader` | `"SPC m"` | Prefix for the evil leader bindings; nil disables them |
 | `tjp-format-on-save` | `nil` | Run `tjp-format-buffer` before every save |
+| `tjp-critical-path-report-id` | `"tjpModeCriticalPath"` | ID of the temporary report used for the critical path |
+
+The face `tjp-critical-path` controls the highlight; customize it as usual.
 
 `compile-command` is honoured: set it in `.dir-locals.el` and `C-c C-c` will run
 your command instead of the derived one.
@@ -324,6 +331,59 @@ formatting option, and an `export` report with `formats tjp` re-emits the
 *scheduled model* (comments gone, macros expanded, `effort` replaced by computed
 dates and `booking` blocks), which is a different thing entirely. `tj3
 --check-syntax` (`C-c C-k`) remains the syntax linter.
+
+## Critical path
+
+`C-c C-x` (`tjp-toggle-critical-path`, `SPC m s c`) asks tj3 to schedule the
+project, then highlights the most critical chain of tasks in the buffer and
+marks it in the navigator. Run it again to clear.
+
+```
+task spec "Specification" {     ← highlighted
+task impl "Implementation" {    ← highlighted
+task test "Testing" {           ← highlighted
+task docs "Documentation" {
+task ship "Ship" {              ← highlighted
+```
+
+with `Critical path: spec → impl → test → ship` in the echo area.
+
+**What it actually measures.** TaskJuggler has no slack column, so this is not
+the zero-slack critical path of classical CPM. What the scheduler does compute
+is `criticalness` (how strained a task's allocated resources are) and
+`pathcriticalness` (the criticalness of the whole path through a task).
+`pathcriticalness` accumulates downstream — a task's value is its own
+criticalness plus that of the most critical path leading away from it — so the
+mode starts at the highest value and repeatedly steps to the successor with the
+highest value, which walks exactly the path that metric is built from. Container
+tasks are stepped over: their criticalness covers everything beneath them and
+would otherwise outrank their own children.
+
+**How it runs.** A copy of the project with one extra CSV report appended is
+compiled in the background with `--report`, so your own reports are not
+regenerated. The report is given an absolute file name, because tj3's `-o` is
+only applied when it generates *all* reports — without that, the CSV would land
+in your project directory. The copy and its output are deleted afterwards, and
+nothing in your project files is touched.
+
+## Navigator
+
+`C-c C-s` (`tjp-toggle-structure`, `SPC m s s`) opens the structure navigator in
+a side window, and closes it when it is already open.
+
+```
+res    alice (Alice)  :2
+task   spec (Specification)  critical  :5
+task   impl (Implementation)  critical  :6
+task   docs (Documentation)  :8
+report crit (crit)  :11
+```
+
+`RET` or `mouse-1` **anywhere on a line** jumps to that definition — the whole
+line is the link, not just the name — and `q` closes the window. Definitions
+written without an ID are listed by name, and tasks on the critical path are
+marked once `C-c C-x` has been run. The dependency and successor buffers work
+the same way.
 
 ## Multi-file projects
 

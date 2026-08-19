@@ -82,6 +82,7 @@
 ;;   C-c C-y     - Show the dependency chain of the task at point
 ;;   C-c C-u     - Show the successor chain of the task at point
 ;;   C-c C-q     - Reformat the buffer
+;;   C-c C-x     - Highlight the critical path (toggle)
 ;;   C-c C-l     - Show resource allocations
 ;;
 ;; Multi-file projects:
@@ -1362,9 +1363,59 @@ inside one would land you straight back where you started."
     map)
   "Keymap for clickable task links.")
 
+(defvar tjp-report-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "RET") #'tjp--nav-line-action)
+    (define-key map (kbd "TAB") #'forward-button)
+    map)
+  "Keymap for `tjp-report-mode'.")
+
 (define-derived-mode tjp-report-mode special-mode "TJ Report"
   "Major mode for the TaskJuggler structure, dependency and statistics buffers."
   (setq-local truncate-lines t))
+
+(defun tjp--nav-target-on-line ()
+  "Return (SOURCE-BUFFER . LINE) for the current navigator line, or nil.
+Point may be anywhere on the line: the whole line carries the target, and
+this also finds it on lines rendered before that was the case."
+  (let ((pos (line-beginning-position))
+        (end (line-end-position))
+        (found nil))
+    (while (and (not found) (<= pos end))
+      (let ((buffer (get-text-property pos 'tjp-source-buffer))
+            (line (get-text-property pos 'tjp-line)))
+        (if (and buffer line)
+            (setq found (cons buffer line))
+          (setq pos (1+ pos)))))
+    found))
+
+(defun tjp--nav-line-action ()
+  "Jump to the definition named on the current navigator line."
+  (interactive)
+  (let ((target (tjp--nav-target-on-line)))
+    (if (null target)
+        (message "Nothing to jump to on this line")
+      (tjp--nav-goto (car target) (cdr target)))))
+
+(defun tjp--nav-goto (source-buffer line)
+  "Show LINE of SOURCE-BUFFER."
+  (if (not (buffer-live-p source-buffer))
+      (message "The buffer this navigator was built from is gone")
+    (pop-to-buffer source-buffer)
+    (goto-char (point-min))
+    (forward-line (1- line))
+    (back-to-indentation)))
+
+(defun tjp--propertize-nav-line (start end line source-buffer)
+  "Make the text between START and END jump to LINE of SOURCE-BUFFER.
+The properties cover the whole line, so RET and mouse-1 work wherever
+point happens to be, not only on the name."
+  (add-text-properties start end
+                       (list 'tjp-line line
+                             'tjp-source-buffer source-buffer
+                             'mouse-face 'highlight
+                             'help-echo "mouse-1, RET: jump to definition"
+                             'keymap tjp-nav-button-map)))
 
 (defmacro tjp--with-report-buffer (name &rest body)
   "Erase the report buffer NAME, run BODY in it and display it read-only."
@@ -1402,52 +1453,81 @@ inside one would land you straight back where you started."
         ((member type tjp--report-keywords) "report")
         (t type)))
 
-(defun tjp-show-structure ()
-  "Show the project structure in a side window with clickable links.
-Definitions written without an ID are listed under their name."
-  (interactive)
-  (let ((source-buffer (current-buffer))
-        (source-file (buffer-file-name))
+(defconst tjp--structure-buffer-name "*TJ Structure*"
+  "Name of the navigator buffer built by `tjp-toggle-structure'.")
+
+(defun tjp--structure-window ()
+  "Return the window showing the navigator, or nil."
+  (get-buffer-window tjp--structure-buffer-name))
+
+(defun tjp--build-structure (source-buffer)
+  "Fill the navigator buffer with the definitions in SOURCE-BUFFER."
+  (let ((source-file (buffer-local-value 'buffer-file-name source-buffer))
+        (critical (buffer-local-value 'tjp--critical-tasks source-buffer))
         (entries '()))
-    (save-excursion
-      (goto-char (point-min))
-      (while (re-search-forward tjp--index-regexp nil t)
-        (let* ((type (match-string-no-properties 1))
-               (id (match-string-no-properties 2))
-               (name (match-string-no-properties 3))
-               (start (match-beginning 0)))
-          (unless (tjp--in-string-or-comment-p start)
-            (push (list (save-excursion (goto-char start) (current-indentation))
-                        type id name
-                        (line-number-at-pos start))
-                  entries)))))
+    (with-current-buffer source-buffer
+      (save-excursion
+        (goto-char (point-min))
+        (while (re-search-forward tjp--index-regexp nil t)
+          (let* ((type (match-string-no-properties 1))
+                 (id (match-string-no-properties 2))
+                 (name (match-string-no-properties 3))
+                 (start (match-beginning 0)))
+            (unless (tjp--in-string-or-comment-p start)
+              (push (list (save-excursion (goto-char start) (current-indentation))
+                          type id name
+                          (line-number-at-pos start))
+                    entries))))))
     (setq entries (nreverse entries))
-    (let ((buffer (get-buffer-create "*TJ Structure*")))
+    (let ((buffer (get-buffer-create tjp--structure-buffer-name)))
       (with-current-buffer buffer
         (unless (derived-mode-p 'tjp-report-mode) (tjp-report-mode))
         (let ((inhibit-read-only t))
           (erase-buffer)
           (insert (format "TaskJuggler Structure: %s\n"
                           (if source-file (file-name-nondirectory source-file) "untitled")))
-          (insert "Press RET or click to jump to a definition, q to quit.\n\n")
+          (insert "RET or click anywhere on a line jumps to it, q closes.\n\n")
           (if (null entries)
               (insert "No definitions found in this file.\n")
             (dolist (entry entries)
               (cl-destructuring-bind (indent type id name line) entry
-                (insert (make-string (/ indent tjp-indent-offset) ?\s))
-                (insert (propertize (format "%-7s" (tjp--structure-tag type))
-                                    'face 'font-lock-keyword-face))
-                (insert (tjp--make-clickable-definition
-                         (tjp--definition-label id name) line source-buffer))
-                (insert (format "  %s%d\n"
-                                (propertize ":" 'face 'shadow)
-                                line)))))
+                (let ((start (point))
+                      (criticalp (and id critical (gethash id critical))))
+                  (insert (make-string (/ indent tjp-indent-offset) ?\s))
+                  (insert (propertize (format "%-7s" (tjp--structure-tag type))
+                                      'face 'font-lock-keyword-face))
+                  (insert (propertize (tjp--definition-label id name)
+                                      'face (if criticalp
+                                                'tjp-critical-path
+                                              'font-lock-function-name-face)))
+                  (when criticalp
+                    (insert (propertize "  critical" 'face 'tjp-critical-path)))
+                  (insert (propertize (format "  :%d" line) 'face 'shadow))
+                  (tjp--propertize-nav-line start (point) line source-buffer)
+                  (insert "\n")))))
           (goto-char (point-min))))
-      (display-buffer buffer
-                      '((display-buffer-in-side-window)
-                        (side . right)
-                        (window-width . 50)))
       buffer)))
+
+(defun tjp-toggle-structure ()
+  "Show the project structure in a side window, or close it if it is open.
+Every line is a link: RET or mouse-1 anywhere on it jumps to the
+definition.  Definitions written without an ID are listed by name, and
+tasks on the critical path are marked when `tjp-toggle-critical-path'
+has been run."
+  (interactive)
+  (if (tjp--structure-window)
+      (quit-window nil (tjp--structure-window))
+    (display-buffer (tjp--build-structure (current-buffer))
+                    '((display-buffer-in-side-window)
+                      (side . right)
+                      (window-width . 50)))))
+
+(defalias 'tjp-show-structure #'tjp-toggle-structure)
+
+(defun tjp--refresh-structure ()
+  "Rebuild the navigator if it is on screen."
+  (when (tjp--structure-window)
+    (tjp--build-structure (current-buffer))))
 
 ;; ============================================================================
 ;; MACRO EXPANSION AND NAVIGATION
@@ -1571,17 +1651,15 @@ of hierarchical IDs."
   (interactive (list last-input-event))
   (when event
     (mouse-set-point event))
-  (let ((source-buffer (get-text-property (point) 'tjp-source-buffer))
-        (line (get-text-property (point) 'tjp-line)))
-    (when (and source-buffer line)
-      (pop-to-buffer source-buffer)
-      (goto-char (point-min))
-      (forward-line (1- line))
-      (back-to-indentation))))
+  (let ((target (tjp--nav-target-on-line)))
+    (when target
+      (tjp--nav-goto (car target) (cdr target)))))
 
 (defconst tjp--link-regexp
-  "^[ \t]*\\(depends\\|precedes\\)[ \t]+\\(.*\\)$"
-  "Regexp matching a `depends' or `precedes' attribute and its value.")
+  "\\_<\\(depends\\|precedes\\)\\_>[ \t]+\\(.*\\)$"
+  "Regexp matching a `depends' or `precedes' attribute and its value.
+Not anchored to the start of a line: a task may be written on one line,
+as in `task t \"T\" { effort 2d depends !other }'.")
 
 (defun tjp--strip-comment (string)
   "Return STRING without a trailing `#' or `//' comment."
@@ -1605,19 +1683,27 @@ and is left at the end of the last line consumed."
     value))
 
 (defun tjp--parse-task-refs (value)
-  "Return the task IDs referenced in a `depends' or `precedes' VALUE.
-Modifiers such as `{ gapduration 2d }' are dropped, the `!' scope prefix
-of a relative reference is removed, and a dotted path is reduced to its
-last component - which is how tasks are keyed everywhere else here."
-  (let ((clean (replace-regexp-in-string "{[^}]*}" "" (tjp--strip-comment value))))
-    (delq nil
-          (mapcar (lambda (ref)
-                    (let* ((ref (replace-regexp-in-string "\\`!+" "" (string-trim ref)))
-                           (leaf (car (last (split-string ref "\\." t)))))
-                      (and leaf
-                           (string-match-p "\\`[A-Za-z_][A-Za-z0-9_]*\\'" leaf)
-                           leaf)))
-                  (split-string clean "," t "[ \t]*")))))
+  "Return the task IDs at the head of VALUE.
+VALUE is the text following `depends' or `precedes'.  The list is a
+comma-separated sequence of references, each optionally followed by a
+`{ gapduration 2d }' style modifier; parsing stops at the first token
+that is not part of that sequence, so whatever follows the list on the
+same line - legal inside a one-line task definition - is not mistaken
+for a dependency.  The `!' scope prefix is dropped and a dotted path is
+reduced to its last component, which is how tasks are keyed here."
+  (let ((rest (tjp--strip-comment value))
+        (refs '())
+        (more t))
+    (while (and more
+                (string-match
+                 "\\`[ \t]*!*\\([A-Za-z_][A-Za-z0-9_.]*\\)[ \t]*\\(?:{[^}]*}[ \t]*\\)?"
+                 rest))
+      (push (car (last (split-string (match-string 1 rest) "\\." t))) refs)
+      (setq rest (substring rest (match-end 0)))
+      (if (string-match "\\`[ \t]*,[ \t]*" rest)
+          (setq rest (substring rest (match-end 0)))
+        (setq more nil)))
+    (nreverse (delq nil refs))))
 
 (defun tjp--build-link-maps ()
   "Return (PREDECESSORS . SUCCESSORS) for the tasks in this buffer.
@@ -1681,7 +1767,11 @@ their links point into."
         (if (stringp child)
             ;; The cycle marker planted by `tjp--get-chain'.
             (insert (propertize child 'face 'font-lock-warning-face) "\n")
-          (tjp--insert-task-link (car child) loc-map source-buffer)
+          (let ((start (line-beginning-position))
+                (line (tjp--lookup-task-line (car child) loc-map)))
+            (tjp--insert-task-link (car child) loc-map source-buffer)
+            (when line
+              (tjp--propertize-nav-line start (point) line source-buffer)))
           (insert "\n")
           (tjp--insert-chain-node child (concat prefix continuation)
                                   loc-map source-buffer))))))
@@ -1690,12 +1780,18 @@ their links point into."
   "Insert TREE as an indented tree of clickable task links.
 LOC-MAP maps task IDs to line numbers and SOURCE-BUFFER is the buffer
 their links point into."
-  (tjp--insert-task-link (car tree) loc-map source-buffer)
+  (let ((start (point))
+        (line (tjp--lookup-task-line (car tree) loc-map)))
+    (tjp--insert-task-link (car tree) loc-map source-buffer)
+    (when line
+      (tjp--propertize-nav-line start (point) line source-buffer)))
   (insert "\n")
   (tjp--insert-chain-node tree "" loc-map source-buffer))
 
 (defun tjp--insert-task-link (task loc-map source-buffer)
-  "Insert TASK as a link into LOC-MAP's line of SOURCE-BUFFER, or as plain text."
+  "Insert TASK as a link into LOC-MAP's line of SOURCE-BUFFER, or as plain text.
+The link is extended over the whole line by `tjp--insert-chain-node', so
+that RET works wherever point sits."
   (let ((line (tjp--lookup-task-line task loc-map)))
     (if line
         (insert (tjp--make-clickable-task task line source-buffer))
@@ -1728,8 +1824,11 @@ what waits for the task."
                               "untitled")))
             (insert "=====================================\n\n")
             (if (null (cdr chain))
-                (progn
+                (let ((start (point)))
                   (tjp--insert-task-link task loc-map source-buffer)
+                  (let ((line (tjp--lookup-task-line task loc-map)))
+                    (when line
+                      (tjp--propertize-nav-line start (point) line source-buffer)))
                   (insert (if successors
                               " has no successors.\n"
                             " has no dependencies.\n")))
@@ -2165,6 +2264,225 @@ one to open.  The file is opened only after compilation succeeds."
          (message "Report output not found: %s" html-file))))))
 
 ;; ============================================================================
+;; CRITICAL PATH
+;; ============================================================================
+
+;; TaskJuggler has no "slack" column, but its scheduler computes
+;; `criticalness' (how strained a task's allocated resources are) and
+;; `pathcriticalness' (the criticalness of the whole path through a task).
+;; pathcriticalness accumulates downstream - a task's value is its own
+;; criticalness plus that of the most critical path leading away from it -
+;; so the most critical path is found by starting at the highest value and
+;; repeatedly stepping to the successor with the highest value.
+
+(defface tjp-critical-path
+  '((t :inherit font-lock-warning-face :weight bold))
+  "Face for tasks on the critical path."
+  :group 'tjp)
+
+(defcustom tjp-critical-path-report-id "tjpModeCriticalPath"
+  "ID of the temporary report `tjp-toggle-critical-path' asks tj3 for.
+Only needs changing if a project of yours already defines this ID."
+  :type 'string
+  :group 'tjp)
+
+(defvar-local tjp--critical-tasks nil
+  "Hash table of the IDs of the tasks on the critical path, or nil.")
+
+(defvar-local tjp--critical-overlays nil
+  "Overlays highlighting the critical path in this buffer.")
+
+(defun tjp--critical-report-text (base)
+  "Return the report definition tj3 is asked to generate, writing to BASE.
+BASE is an absolute file name without extension.  It has to be absolute:
+tj3's `-o' option is only applied when it generates *all* reports, so the
+only way to keep this one report out of the project directory is to give
+it an absolute name, which `Report#absoluteFileName?' honours."
+  (format "\ntaskreport %s \"%s\" {\n  formats csv\n  columns id, name, pathcriticalness, criticalness, start, end\n  hideresource 1\n}\n"
+          tjp-critical-path-report-id
+          (replace-regexp-in-string "[\"\\\\]" "\\\\\\&" base)))
+
+(defun tjp--parse-critical-csv (file)
+  "Parse tj3's CSV at FILE into a list of (ID PATHCRIT CRIT NAME START END)."
+  (when (file-readable-p file)
+    (with-temp-buffer
+      (insert-file-contents file)
+      (goto-char (point-min))
+      (forward-line 1)                  ; header
+      (let ((rows '()))
+        (while (not (eobp))
+          (let* ((line (buffer-substring-no-properties
+                        (line-beginning-position) (line-end-position)))
+                 (fields (mapcar (lambda (f)
+                                   (string-trim (string-trim f "\"" "\"")))
+                                 (split-string line ";"))))
+            (when (>= (length fields) 4)
+              ;; tj3 reports the full hierarchical ID; tasks are keyed here by
+              ;; their last component, as everywhere else in this file.
+              (let ((id (car (last (split-string (nth 0 fields) "\\." t)))))
+                (push (list id
+                            (string-to-number (nth 2 fields))
+                            (string-to-number (nth 3 fields))
+                            (nth 1 fields)
+                            (nth 4 fields)
+                            (nth 5 fields))
+                      rows))))
+          (forward-line 1))
+        (nreverse rows)))))
+
+(defun tjp--container-tasks ()
+  "Return a hash table of the IDs of tasks that contain other tasks.
+A container's criticalness covers everything below it, so it would
+otherwise outrank - and cut short - the path through its own children."
+  (let ((containers (make-hash-table :test 'equal))
+        (stack '()))
+    (save-excursion
+      (goto-char (point-min))
+      (while (re-search-forward "^\\([ \t]*\\)task[ \t]+\\([A-Za-z_][A-Za-z0-9_]*\\)" nil t)
+        (unless (tjp--in-string-or-comment-p (match-beginning 0))
+          (let ((indent (length (match-string 1)))
+                (id (match-string-no-properties 2)))
+            (while (and stack (>= (caar stack) indent))
+              (pop stack))
+            (when stack
+              (puthash (cdar stack) t containers))
+            (push (cons indent id) stack)))))
+    containers))
+
+(defun tjp--critical-path-from (rows succs containers)
+  "Return the most critical path as a list of task IDs.
+ROWS is the parsed report, SUCCS the successor map of the project and
+CONTAINERS the tasks to step over.  The walk starts at the task with the
+highest `pathcriticalness' and repeatedly moves to the successor with the
+highest value, which is the path that metric is built from."
+  (let ((score (make-hash-table :test 'equal))
+        (best nil)
+        (best-value -1))
+    (dolist (row rows)
+      (unless (gethash (nth 0 row) containers)
+        (puthash (nth 0 row) (nth 1 row) score)
+        (when (> (nth 1 row) best-value)
+          (setq best-value (nth 1 row)
+                best (nth 0 row)))))
+    (when best
+      (let ((path (list best))
+            (task best)
+            (seen (list best)))
+        (while task
+          (let ((next nil)
+                (next-value -1))
+            (dolist (candidate (gethash task succs))
+              (let ((value (gethash candidate score)))
+                (when (and value (not (member candidate seen))
+                           (> value next-value))
+                  (setq next candidate
+                        next-value value))))
+            (setq task next)
+            (when task
+              (push task path)
+              (push task seen))))
+        (nreverse path)))))
+
+(defun tjp--highlight-critical-path (path)
+  "Put an overlay on the definition line of every task in PATH."
+  (tjp--clear-critical-overlays)
+  (setq tjp--critical-tasks (make-hash-table :test 'equal))
+  (dolist (id path) (puthash id t tjp--critical-tasks))
+  (let ((loc-map (tjp--build-task-location-map)))
+    (dolist (id path)
+      (let ((line (tjp--lookup-task-line id loc-map)))
+        (when line
+          (save-excursion
+            (goto-char (point-min))
+            (forward-line (1- line))
+            (let ((overlay (make-overlay (line-beginning-position)
+                                         (line-end-position))))
+              (overlay-put overlay 'face 'tjp-critical-path)
+              (overlay-put overlay 'tjp-critical t)
+              (overlay-put overlay 'help-echo
+                           (format "On the critical path: %s"
+                                   (mapconcat #'identity path " -> ")))
+              (push overlay tjp--critical-overlays))))))))
+
+(defun tjp--clear-critical-overlays ()
+  "Remove the critical path overlays from this buffer."
+  (mapc #'delete-overlay tjp--critical-overlays)
+  (setq tjp--critical-overlays nil))
+
+(defun tjp-clear-critical-path ()
+  "Stop highlighting the critical path."
+  (interactive)
+  (tjp--clear-critical-overlays)
+  (setq tjp--critical-tasks nil)
+  (tjp--refresh-structure)
+  (message "Critical path highlighting cleared"))
+
+(defun tjp--critical-path-finish (source-buffer csv tmp-file tmp-dir status)
+  "Apply the critical path from CSV to SOURCE-BUFFER, then clean up.
+TMP-FILE and TMP-DIR are removed; STATUS is tj3's exit status."
+  (unwind-protect
+      (if (not (and (eq status 0) (file-readable-p csv)))
+          (message "tj3 could not compute the critical path (see *TJ Critical Path*)")
+        (with-current-buffer source-buffer
+          (let* ((rows (tjp--parse-critical-csv csv))
+                 (succs (cdr (tjp--build-link-maps)))
+                 (path (tjp--critical-path-from rows succs
+                                                (tjp--container-tasks))))
+            (if (null path)
+                (message "No critical path found")
+              (tjp--highlight-critical-path path)
+              (tjp--refresh-structure)
+              (message "Critical path: %s" (mapconcat #'identity path " → "))))))
+    (ignore-errors (delete-file tmp-file))
+    (ignore-errors (delete-directory tmp-dir t))))
+
+(defun tjp-show-critical-path ()
+  "Ask tj3 to schedule the project and highlight its most critical path.
+A copy of the project with one extra CSV report is compiled in the
+background; the copy and its output are deleted afterwards.  Highlighted
+tasks are the chain of highest `pathcriticalness', which is TaskJuggler's
+own measure of how strained a path's resources are - not the zero-slack
+critical path of classical CPM."
+  (interactive)
+  (let* ((project (tjp--compile-target))
+         (program (tjp--compiler))
+         (dir (file-name-directory project))
+         (tmp-dir (file-name-as-directory (make-temp-file "tjp-crit" t)))
+         (base (expand-file-name "critical-path" tmp-dir))
+         (tmp-file (make-temp-file (expand-file-name ".tjp-crit-" dir) nil ".tjp"
+                                   (with-temp-buffer
+                                     (insert-file-contents project)
+                                     (goto-char (point-max))
+                                     (insert (tjp--critical-report-text base))
+                                     (buffer-string))))
+         (source-buffer (current-buffer))
+         (csv (concat base ".csv"))
+         (log (get-buffer-create "*TJ Critical Path*")))
+    (with-current-buffer log (erase-buffer))
+    (message "Scheduling %s to find the critical path..."
+             (file-name-nondirectory project))
+    (make-process
+     :name "tjp-critical-path"
+     :buffer log
+     :noquery t
+     ;; --report generates only this report, so the project's own reports
+     ;; are not rebuilt as a side effect of asking a question about it.
+     :command (list program "--silent" "--no-color"
+                    "--report" tjp-critical-path-report-id
+                    tmp-file)
+     :sentinel (lambda (proc _event)
+                 (unless (process-live-p proc)
+                   (tjp--critical-path-finish source-buffer csv tmp-file tmp-dir
+                                              (process-exit-status proc)))))))
+
+(defun tjp-toggle-critical-path ()
+  "Highlight the critical path, or clear it if it is already shown."
+  (interactive)
+  (if tjp--critical-overlays
+      (tjp-clear-critical-path)
+    (tjp-show-critical-path)))
+
+;; ============================================================================
 ;; FORMATTING
 ;; ============================================================================
 
@@ -2426,8 +2744,11 @@ whichever command the running Emacs provides.")
     ;; Formatting
     (define-key map (kbd "C-c C-q") 'tjp-format-buffer)
 
+    ;; Critical path
+    (define-key map (kbd "C-c C-x") 'tjp-toggle-critical-path)
+
     ;; Structure and Analysis
-    (define-key map (kbd "C-c C-s") 'tjp-show-structure)
+    (define-key map (kbd "C-c C-s") 'tjp-toggle-structure)
     (define-key map (kbd "C-c C-=") 'tjp-show-statistics)
 
     ;; Tags
