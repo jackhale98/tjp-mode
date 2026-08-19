@@ -1,31 +1,22 @@
 ;;; tjp-evil.el --- Evil and localleader bindings for tjp-mode -*- lexical-binding: t; -*-
 
-;; Copyright (C) 2025 TaskJuggler Developers
+;; Copyright (C) 2025-2026 Jack Hale
 
-;; Author: TaskJuggler Developers <taskjuggler-devel@googlegroups.com>
+;; Author: Jack Hale
 ;; Keywords: languages, project management
 ;; Version: 2.2.0
 ;; Package-Requires: ((emacs "27.1"))
 ;; URL: https://github.com/jackhale98/tjp-mode
-;; SPDX-License-Identifier: GPL-2.0-only
+;; SPDX-License-Identifier: MIT
 
-;; This file is part of tjp-mode.  The TaskJuggler keyword tables it
-;; contains were generated from TaskJuggler's own syntax definitions
-;; (EmacsLispSyntax.rb), so this package is a derivative of TaskJuggler
-;; and carries TaskJuggler's license.
+;; This file is part of tjp-mode and is released under the MIT license;
+;; see the LICENSE file at the root of the repository.
 ;;
-;; This program is free software; you can redistribute it and/or modify
-;; it under the terms of version 2 of the GNU General Public License as
-;; published by the Free Software Foundation.
-;;
-;; This program is distributed in the hope that it will be useful, but
-;; WITHOUT ANY WARRANTY; without even the implied warranty of
-;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-;; General Public License for more details.
-;;
-;; You should have received a copy of the GNU General Public License
-;; along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
+;; TaskJuggler itself is a separate program, licensed GPL-2.0-only.  This
+;; mode neither includes nor links any TaskJuggler code: its keyword
+;; tables are lists of the names of TaskJuggler's syntax keywords, and its
+;; date, time and number patterns follow the token formats defined by the
+;; TaskJuggler language.
 
 ;;; Commentary:
 
