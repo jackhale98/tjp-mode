@@ -223,10 +223,15 @@ Unbound but available: `tjp-expand-macro-at-point`, `tjp-find-macro-definition`,
 
 ### Evil, Doom and Spacemacs
 
-`tjp-evil.el` installs the same tree twice: under `SPC m` when general.el is
-loaded (Doom, Spacemacs) and under `,` for every other evil user. Normal state
-also gets `gd` / `gD` (definition, references), `K` (tj3man), `]]` / `[[` (block
-motion) and `za` / `zm` / `zr` (folding).
+Everything lives under the `SPC m` major-mode leader, the Doom and Spacemacs
+convention. general.el installs it when present (so which-key shows the group
+labels); evil users without general get the same tree under the same prefix.
+Change it with `tjp-evil-localleader`, or set that to nil for no leader
+bindings at all.
+
+Normal state also gets `gd` / `gD` (definition, references), `K` (tj3man),
+`]]` / `[[` (block motion) and `za` / `zm` / `zr` (folding). `,` is left alone,
+so evil's reverse find-char still works.
 
 | Prefix | Key | Command |
 | --- | --- | --- |
@@ -256,6 +261,7 @@ motion) and `za` / `zm` / `zr` (folding).
 | `tjp-follow-includes` | `t` | Scan `include`d files for IDs |
 | `tjp-cache-ttl` | `2.0` | Seconds a project scan is reused (raise it for very large projects) |
 | `tjp-cleanup-whitespace-on-save` | `t` | Delete trailing whitespace on save, never inside strings |
+| `tjp-evil-localleader` | `"SPC m"` | Prefix for the evil leader bindings; nil disables them |
 
 `compile-command` is honoured: set it in `.dir-locals.el` and `C-c C-c` will run
 your command instead of the derived one.
@@ -343,9 +349,19 @@ layer already does this for files over 1 MB.
 | `tjp-mode.el` | The major mode |
 | `tjp-evil.el` | Evil / Doom / Spacemacs keybindings, loaded automatically |
 | `Makefile` | `make compile`, `make lint`, `make clean` |
+| `LICENSE` | GNU GPL version 2 |
 | `AUDIT.md` | Audit of the previous version: every bug found, and how it was fixed |
 
 ## License
 
-TaskJuggler is distributed under version 2 of the GNU General Public License;
-this mode follows the same license as the upstream project it accompanies.
+**GPL-2.0-only** — see [LICENSE](LICENSE).
+
+This is the most permissive license available to this package, not a
+preference. The keyword tables in `tjp-mode.el` were generated from
+TaskJuggler's own syntax definitions (`EmacsLispSyntax.rb`) and the file
+carries TaskJuggler's copyright notice, which makes the package a derivative
+work of TaskJuggler. TaskJuggler is licensed under *version 2* of the GPL and
+no later version (`s.license = 'GPL-2.0-only'` in its gemspec, and every source
+header says "version 2"), so a derivative cannot be released under a more
+permissive license, nor under "GPL-2.0-or-later". The `LICENSE` file is
+byte-identical to the `COPYING` file TaskJuggler ships.

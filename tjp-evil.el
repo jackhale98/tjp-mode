@@ -7,23 +7,39 @@
 ;; Version: 2.2.0
 ;; Package-Requires: ((emacs "27.1"))
 ;; URL: https://github.com/jackhale98/tjp-mode
+;; SPDX-License-Identifier: GPL-2.0-only
 
-;; This file is part of tjp-mode.
+;; This file is part of tjp-mode.  The TaskJuggler keyword tables it
+;; contains were generated from TaskJuggler's own syntax definitions
+;; (EmacsLispSyntax.rb), so this package is a derivative of TaskJuggler
+;; and carries TaskJuggler's license.
+;;
+;; This program is free software; you can redistribute it and/or modify
+;; it under the terms of version 2 of the GNU General Public License as
+;; published by the Free Software Foundation.
+;;
+;; This program is distributed in the hope that it will be useful, but
+;; WITHOUT ANY WARRANTY; without even the implied warranty of
+;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+;; General Public License for more details.
+;;
+;; You should have received a copy of the GNU General Public License
+;; along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 
 ;;; Commentary:
 
 ;; Optional evil-mode keybindings for `tjp-mode'.
 ;;
-;; Provides two layers of bindings, both generated from the single table
-;; in `tjp-evil-localleader-bindings':
+;; Every command lives under the `SPC m' major-mode leader, the Doom and
+;; Spacemacs convention, generated from the single table in
+;; `tjp-evil-localleader-bindings'.  general.el installs them when it is
+;; available (Doom, Spacemacs); evil users without general get the same
+;; tree under the same prefix through `evil-define-key*'.  The prefix
+;; itself is `tjp-evil-localleader'.
 ;;
-;;   1. `SPC m' major-mode leader via general.el - Doom and Spacemacs
-;;      style, activated only when general.el is loaded.
-;;   2. `,' localleader fallback via `evil-define-key*' - works for
-;;      every evil user without extra packages.
-;;
-;; Plus the usual normal-state motions: `gd', `K', `]]', `[[', `za',
-;; `zm', `zr'.
+;; Plus the usual normal-state motions: `gd', `gD', `K', `]]', `[[',
+;; `za', `zm', `zr'.
 ;;
 ;; Neither evil nor general is a hard dependency; both are loaded lazily
 ;; through `with-eval-after-load', so requiring this file from a vanilla
@@ -62,6 +78,14 @@
 (declare-function tjp-generate-tags "tjp-mode")
 
 (defvar tjp-mode-map)
+
+(defcustom tjp-evil-localleader "SPC m"
+  "Key sequence prefixing the `tjp-mode' major-mode leader bindings.
+The default is Doom's and Spacemacs' localleader.  Set it to nil to
+install no leader bindings at all; the normal-state motions (`gd', `K',
+`]]', `[[', `za') are unaffected."
+  :type '(choice (const :tag "None" nil) (string :tag "Key sequence"))
+  :group 'tjp)
 
 ;; ============================================================================
 ;; BINDING TABLE
@@ -113,8 +137,16 @@
     ("t v" visit-tags-table           "visit tags table"))
   "Localleader bindings for `tjp-mode'.
 Each entry is either (KEYS :group LABEL), declaring a prefix, or
-\(KEYS COMMAND LABEL).  The same table drives the general.el `SPC m'
-bindings and the `,' fallback for plain evil users.")
+\(KEYS COMMAND LABEL).  The same table drives both the general.el
+bindings and the `evil-define-key*' fallback, under
+`tjp-evil-localleader'.")
+
+(defun tjp-evil--commands ()
+  "Return the (KEYS . COMMAND) pairs of `tjp-evil-localleader-bindings'."
+  (delq nil (mapcar (lambda (entry)
+                      (unless (eq (nth 1 entry) :group)
+                        (cons (car entry) (nth 1 entry))))
+                    tjp-evil-localleader-bindings)))
 
 (defun tjp-evil--general-args ()
   "Return `tjp-evil-localleader-bindings' as `general-define-key' arguments."
@@ -128,6 +160,25 @@ bindings and the `,' fallback for plain evil users.")
 ;; ============================================================================
 ;; EVIL BINDINGS
 ;; ============================================================================
+
+(defun tjp-evil--install-general-bindings ()
+  "Install the leader tree with general.el, with which-key labels."
+  (when tjp-evil-localleader
+    (apply #'general-define-key
+           :states 'normal
+           :keymaps 'tjp-mode-map
+           :prefix tjp-evil-localleader
+           (tjp-evil--general-args))))
+
+(defun tjp-evil--install-evil-bindings ()
+  "Install the leader tree with `evil-define-key*'.
+This is the path for evil users who do not have general.el.  The prefix
+is the same `tjp-evil-localleader', so the bindings a user reads about
+are the bindings they get either way."
+  (when tjp-evil-localleader
+    (pcase-dolist (`(,keys . ,command) (tjp-evil--commands))
+      (evil-define-key* 'normal tjp-mode-map
+        (kbd (concat tjp-evil-localleader " " keys)) command))))
 
 (with-eval-after-load 'evil
   ;; Normal-state motions.
@@ -143,19 +194,13 @@ bindings and the `,' fallback for plain evil users.")
   (evil-define-key* 'visual tjp-mode-map
     (kbd "g d") #'xref-find-definitions)
 
-  ;; `,' localleader for evil users without Doom or Spacemacs.
-  (dolist (entry tjp-evil-localleader-bindings)
-    (unless (eq (nth 1 entry) :group)
-      (evil-define-key* 'normal tjp-mode-map
-        (kbd (concat ", " (car entry))) (nth 1 entry))))
-
-  ;; `SPC m' major-mode leader for Doom and Spacemacs.
-  (with-eval-after-load 'general
-    (apply #'general-define-key
-           :states 'normal
-           :keymaps 'tjp-mode-map
-           :prefix "SPC m"
-           (tjp-evil--general-args))))
+  ;; The leader tree.  general.el is what Doom and Spacemacs use, and it
+  ;; carries the which-key labels, so it wins when present.
+  (if (featurep 'general)
+      (tjp-evil--install-general-bindings)
+    (tjp-evil--install-evil-bindings)
+    (with-eval-after-load 'general
+      (tjp-evil--install-general-bindings))))
 
 (provide 'tjp-evil)
 ;;; tjp-evil.el ends here
