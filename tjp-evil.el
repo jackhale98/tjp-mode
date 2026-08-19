@@ -61,6 +61,8 @@
 (declare-function tjp-insert-datetime "tjp-mode")
 (declare-function tjp-show-structure "tjp-mode")
 (declare-function tjp-show-dependencies "tjp-mode")
+(declare-function tjp-show-successors "tjp-mode")
+(declare-function tjp-format-buffer "tjp-mode")
 (declare-function tjp-show-resource-allocation "tjp-mode")
 (declare-function tjp-show-statistics "tjp-mode")
 (declare-function tjp-expand-macro-at-point "tjp-mode")
@@ -109,9 +111,12 @@ install no leader bindings at all; the normal-state motions (`gd', `K',
     ("i d" tjp-insert-date-prompt     "date")
     ("i D" tjp-insert-datetime        "datetime")
 
+    ("="   tjp-format-buffer          "format buffer")
+
     ("s"   :group "structure")
     ("s s" tjp-show-structure         "structure")
-    ("s d" tjp-show-dependencies      "dependencies")
+    ("s d" tjp-show-dependencies      "dependencies (waits for)")
+    ("s n" tjp-show-successors        "successors (waited for by)")
     ("s a" tjp-show-resource-allocation "resource allocation")
     ("s =" tjp-show-statistics        "statistics")
 

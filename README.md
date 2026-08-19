@@ -17,6 +17,8 @@ require the TaskJuggler command line tools (`tj3`, `tj3man`).
 - [Installation](#installation)
 - [Quick start](#quick-start)
 - [Key bindings](#key-bindings)
+- [Dependency and successor chains](#dependency-and-successor-chains)
+- [Formatting](#formatting)
 - [Customization](#customization)
 - [Multi-file projects](#multi-file-projects)
 - [Troubleshooting](#troubleshooting)
@@ -35,7 +37,8 @@ require the TaskJuggler command line tools (`tj3`, `tj3man`).
 | Completion | `completion-at-point` over keywords and every ID in the project, cached so it stays cheap in large files |
 | Documentation | `tj3man` for the keyword at point, falling back to the online manual |
 | Compilation | `tj3` through `compile`, with error patterns wired into `compilation-error-regexp-alist`; async syntax check; optional flycheck checker |
-| Analysis | Structure browser, dependency tree, resource allocation summary, project statistics |
+| Analysis | Structure browser, dependency **and successor** chains, resource allocation summary, project statistics |
+| Formatting | `tjp-format-buffer` applies the house layout; tj3 ships no formatter of its own |
 | Templates | Task / resource / report insertion that nests correctly and follows TJ3's own syntax rules |
 
 ## Requirements
@@ -211,7 +214,9 @@ taskreport overview "Project Overview" {
 | `C-c C-r` / `C-c C-R` | `tjp-insert-resource` / `tjp-insert-report` |
 | `C-c C-d` | `tjp-insert-date-prompt` |
 | `C-c C-s` | `tjp-show-structure` |
-| `C-c C-y` | `tjp-show-dependencies` |
+| `C-c C-y` | `tjp-show-dependencies` (what this task waits for) |
+| `C-c C-u` | `tjp-show-successors` (what waits for this task) |
+| `C-c C-q` | `tjp-format-buffer` |
 | `C-c C-l` | `tjp-show-resource-allocation` |
 | `C-c C-=` | `tjp-show-statistics` |
 | `C-c C-h` | `tjp-show-help` (tj3man) |
@@ -242,7 +247,9 @@ so evil's reverse find-char still works.
 | `f` fold | `f` `a` `u` `m` | toggle / fold all / unfold all / `hs-minor-mode` |
 | `i` insert | `t` `r` `R` | task / resource / report |
 | | `d` `D` | date (picker) / datetime |
-| `s` structure | `s` `d` `a` `=` | structure / dependencies / allocation / statistics |
+| `s` structure | `s` `d` `n` | structure / dependencies / successors |
+| | `a` `=` | resource allocation / statistics |
+| `=` format | | `tjp-format-buffer` |
 | `M` macro | `e` `d` | expand / goto definition |
 | `h` help | `h` `k` | `tj3man` for keyword at point / `describe-mode` |
 | `t` tags | `g` `v` | generate / visit tags table |
@@ -262,9 +269,61 @@ so evil's reverse find-char still works.
 | `tjp-cache-ttl` | `2.0` | Seconds a project scan is reused (raise it for very large projects) |
 | `tjp-cleanup-whitespace-on-save` | `t` | Delete trailing whitespace on save, never inside strings |
 | `tjp-evil-localleader` | `"SPC m"` | Prefix for the evil leader bindings; nil disables them |
+| `tjp-format-on-save` | `nil` | Run `tjp-format-buffer` before every save |
 
 `compile-command` is honoured: set it in `.dir-locals.el` and `C-c C-c` will run
 your command instead of the derived one.
+
+## Dependency and successor chains
+
+`depends` and `precedes` describe the same edge from its two ends, so both are
+read and both views follow both keywords:
+
+* `C-c C-y` — **dependencies**: what the task at point waits for.
+* `C-c C-u` — **successors**: what waits for the task at point.
+
+```
+ship:23
+├── test:13
+│   ├── impl:9
+│   │   └── spec:4
+│   └── docs:18
+│       └── impl:9
+│           └── spec:4
+└── docs:18
+    └── impl:9
+        └── spec:4
+```
+
+Cycles are marked rather than followed, comma-continued lists spanning several
+lines are handled, and `{ gapduration 2d }` style modifiers are ignored. `RET`
+or a click on any task jumps to its definition.
+
+## Formatting
+
+`C-c C-q` (`tjp-format-buffer`, `SPC m =`) applies the layout tj3's own
+generated files use:
+
+* the delimiters of a multi-line block on their own lines
+* one space before a block opener — `task t "T" {`, `macro m [`
+* `, ` between the items of a list — `columns name, start, end`
+* no trailing whitespace
+* one indentation level (`tjp-indent-offset`) per nesting level
+
+A block written entirely on one line — `resource r "R" { rate 10.0 }` — is left
+alone, and so are the contents of `-8<- … ->8-` strings and comments. Set
+`tjp-format-on-save` to reformat on every save; `tjp-format-region` formats just
+the region.
+
+Two things to know: the formatter re-indents by nesting depth, so hand-aligned
+continuation lines get flattened to their block's indentation; and it does not
+touch spacing inside a line other than lists and block openers.
+
+There is no formatter in the TaskJuggler toolchain to defer to — `tj3` has no
+formatting option, and an `export` report with `formats tjp` re-emits the
+*scheduled model* (comments gone, macros expanded, `effort` replaced by computed
+dates and `booking` blocks), which is a different thing entirely. `tj3
+--check-syntax` (`C-c C-k`) remains the syntax linter.
 
 ## Multi-file projects
 

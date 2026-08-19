@@ -80,6 +80,8 @@
 ;;   C-c C-=     - Show project statistics
 ;;   C-c C-h     - Documentation for the keyword at point (tj3man)
 ;;   C-c C-y     - Show the dependency chain of the task at point
+;;   C-c C-u     - Show the successor chain of the task at point
+;;   C-c C-q     - Reformat the buffer
 ;;   C-c C-l     - Show resource allocations
 ;;
 ;; Multi-file projects:
@@ -1577,113 +1579,180 @@ of hierarchical IDs."
       (forward-line (1- line))
       (back-to-indentation))))
 
-(defun tjp--build-dependency-map ()
-  "Build a hash table mapping task IDs to their direct dependencies.
-Returns a hash table where keys are task IDs and values are lists
-of dependency IDs. Note: the `!' prefix in TaskJuggler indicates
-relative task references, not dependency type."
-  (let ((deps-map (make-hash-table :test 'equal)))
-    (save-excursion
-      (goto-char (point-min))
-      (while (re-search-forward
-              "depends\\s-+\\([a-zA-Z0-9_.!, {}]+\\)"
-              nil t)
-        (let ((deps-string (match-string 1))
-              (task (tjp--get-current-task)))
-          (when task
-            ;; Handle comma-separated dependencies, strip modifiers like { gapduration 2d }
-            (let ((clean-deps (replace-regexp-in-string "{[^}]*}" "" deps-string)))
-              (dolist (dep (split-string clean-deps "[,]" t "\\s-*"))
-                (let* ((dep-clean (string-trim dep))
-                       ;; Remove ! prefix (relative reference) to get base ID
-                       (dep-id (replace-regexp-in-string "^!+" "" dep-clean)))
-                  (when (not (string-empty-p dep-id))
-                    (push dep-id (gethash task deps-map))))))))))
-    deps-map))
+(defconst tjp--link-regexp
+  "^[ \t]*\\(depends\\|precedes\\)[ \t]+\\(.*\\)$"
+  "Regexp matching a `depends' or `precedes' attribute and its value.")
 
-(defun tjp--get-dependency-chain (task deps-map visited)
-  "Recursively get the dependency chain for TASK.
-DEPS-MAP is the hash table of dependencies.
-VISITED is a list of already-visited tasks (to detect cycles).
-Returns a nested list structure representing the dependency tree."
+(defun tjp--strip-comment (string)
+  "Return STRING without a trailing `#' or `//' comment."
+  (replace-regexp-in-string "\\(?:#\\|//\\).*\\'" "" string))
+
+(defun tjp--link-value-at-point (first-line)
+  "Return the whole value of a link attribute that starts with FIRST-LINE.
+A list of task references may be continued on the next line whenever the
+current one ends in a comma.  Point must be at the end of the first line
+and is left at the end of the last line consumed."
+  (let ((value first-line)
+        (more t))
+    (while (and more
+                (string-suffix-p "," (string-trim (tjp--strip-comment value))))
+      (if (or (eobp) (/= 0 (forward-line 1)))
+          (setq more nil)
+        (setq value (concat value " "
+                            (buffer-substring-no-properties
+                             (line-beginning-position) (line-end-position))))
+        (end-of-line)))
+    value))
+
+(defun tjp--parse-task-refs (value)
+  "Return the task IDs referenced in a `depends' or `precedes' VALUE.
+Modifiers such as `{ gapduration 2d }' are dropped, the `!' scope prefix
+of a relative reference is removed, and a dotted path is reduced to its
+last component - which is how tasks are keyed everywhere else here."
+  (let ((clean (replace-regexp-in-string "{[^}]*}" "" (tjp--strip-comment value))))
+    (delq nil
+          (mapcar (lambda (ref)
+                    (let* ((ref (replace-regexp-in-string "\\`!+" "" (string-trim ref)))
+                           (leaf (car (last (split-string ref "\\." t)))))
+                      (and leaf
+                           (string-match-p "\\`[A-Za-z_][A-Za-z0-9_]*\\'" leaf)
+                           leaf)))
+                  (split-string clean "," t "[ \t]*")))))
+
+(defun tjp--build-link-maps ()
+  "Return (PREDECESSORS . SUCCESSORS) for the tasks in this buffer.
+Both are hash tables mapping a task ID to the IDs linked to it:
+PREDECESSORS gives the tasks a task waits for, SUCCESSORS the tasks that
+wait for it.  `depends' and `precedes' describe the same edge from its
+two ends, so both are read and each fills in both maps."
+  (let ((preds (make-hash-table :test 'equal))
+        (succs (make-hash-table :test 'equal)))
+    (cl-flet ((link (from to)
+                ;; FROM must finish before TO can start.
+                (unless (member to (gethash from succs))
+                  (push to (gethash from succs)))
+                (unless (member from (gethash to preds))
+                  (push from (gethash to preds)))))
+      (save-excursion
+        (goto-char (point-min))
+        (while (re-search-forward tjp--link-regexp nil t)
+          (let ((kind (match-string-no-properties 1))
+                (value (match-string-no-properties 2))
+                (start (match-beginning 0)))
+            (unless (tjp--in-string-or-comment-p start)
+              (goto-char (line-end-position))
+              (let* ((full (tjp--link-value-at-point value))
+                     (task (tjp--get-current-task))
+                     (refs (tjp--parse-task-refs full)))
+                (when task
+                  (dolist (ref refs)
+                    (if (string= kind "depends")
+                        (link ref task)
+                      (link task ref))))))))))
+    (cons preds succs)))
+
+(defun tjp--get-chain (task map visited)
+  "Return the tree of tasks reachable from TASK through MAP.
+VISITED is the list of ancestors on the current branch, used to stop at
+cycles.  The result is a nested list whose car is a task ID."
   (if (member task visited)
       (list task "(cycle detected)")
-    (let ((deps (gethash task deps-map)))
-      (if deps
+    (let ((links (gethash task map)))
+      (if links
           (cons task
-                (mapcar (lambda (dep-id)
-                          (tjp--get-dependency-chain
-                           dep-id deps-map (cons task visited)))
-                        deps))
+                (mapcar (lambda (id)
+                          (tjp--get-chain id map (cons task visited)))
+                        (reverse links)))
         (list task)))))
 
-(defun tjp--insert-dependency-tree (tree indent loc-map source-buffer)
-  "Insert TREE into current buffer with proper indentation.
-INDENT is the current indentation level.
-LOC-MAP maps task IDs to line numbers.
-SOURCE-BUFFER is the original TJP buffer for navigation."
-  (let ((task (car tree))
-        (deps (cdr tree))
-        (prefix (make-string (* indent 2) ?\s)))
-    ;; Insert task with clickable link
-    (let ((line (tjp--lookup-task-line task loc-map)))
-      (insert prefix)
-      (if line
-          (insert (tjp--make-clickable-task task line source-buffer))
-        (insert (propertize task 'face 'font-lock-function-name-face)))
-      (insert "\n"))
-    ;; Insert dependencies
-    (dolist (dep deps)
-      (if (stringp dep)
-          ;; Cycle detected marker
-          (insert (format "%s  %s\n" prefix
-                         (propertize dep 'face 'font-lock-warning-face)))
-        ;; dep is a subtree (list starting with task id)
-        (insert (format "%s  └── " prefix))
-        ;; Insert subtree inline (remove leading whitespace from first line)
-        (let ((start (point)))
-          (tjp--insert-dependency-tree dep (+ indent 2) loc-map source-buffer)
-          ;; Remove the extra indentation from first line of subtree
-          (save-excursion
-            (goto-char start)
-            (when (looking-at (make-string (* (+ indent 2) 2) ?\s))
-              (delete-char (* (+ indent 2) 2)))))))))
+(defun tjp--insert-chain-node (node prefix loc-map source-buffer)
+  "Insert the children of NODE, drawing each line after PREFIX.
+LOC-MAP maps task IDs to line numbers and SOURCE-BUFFER is the buffer
+their links point into."
+  (let* ((children (cdr node))
+         (count (length children))
+         (i 0))
+    (dolist (child children)
+      (setq i (1+ i))
+      (let* ((lastp (= i count))
+             (branch (if lastp "\u2514\u2500\u2500 " "\u251c\u2500\u2500 "))
+             (continuation (if lastp "    " "\u2502   ")))
+        (insert prefix branch)
+        (if (stringp child)
+            ;; The cycle marker planted by `tjp--get-chain'.
+            (insert (propertize child 'face 'font-lock-warning-face) "\n")
+          (tjp--insert-task-link (car child) loc-map source-buffer)
+          (insert "\n")
+          (tjp--insert-chain-node child (concat prefix continuation)
+                                  loc-map source-buffer))))))
 
-(defun tjp-show-dependencies ()
-  "Show the full dependency chain for the task at point."
-  (interactive)
-  (let ((current-task (tjp--get-current-task))
+(defun tjp--insert-chain-tree (tree loc-map source-buffer)
+  "Insert TREE as an indented tree of clickable task links.
+LOC-MAP maps task IDs to line numbers and SOURCE-BUFFER is the buffer
+their links point into."
+  (tjp--insert-task-link (car tree) loc-map source-buffer)
+  (insert "\n")
+  (tjp--insert-chain-node tree "" loc-map source-buffer))
+
+(defun tjp--insert-task-link (task loc-map source-buffer)
+  "Insert TASK as a link into LOC-MAP's line of SOURCE-BUFFER, or as plain text."
+  (let ((line (tjp--lookup-task-line task loc-map)))
+    (if line
+        (insert (tjp--make-clickable-task task line source-buffer))
+      (insert (propertize task 'face 'font-lock-function-name-face)))))
+
+(defun tjp--show-chain (direction)
+  "Show the chain of task links in DIRECTION for the task at point.
+DIRECTION is `predecessors' - what the task waits for - or `successors',
+what waits for the task."
+  (let ((task (tjp--get-current-task))
         (source-buffer (current-buffer))
-        (source-file (buffer-file-name)))
-
-    (if (not current-task)
+        (source-file (buffer-file-name))
+        (successors (eq direction 'successors)))
+    (if (not task)
         (message "No task found at point")
-
-      (let* ((deps-buffer (get-buffer-create "*TJ Dependencies*"))
-             (deps-map (tjp--build-dependency-map))
+      (let* ((maps (tjp--build-link-maps))
+             (map (if successors (cdr maps) (car maps)))
              (loc-map (tjp--build-task-location-map))
-             (chain (tjp--get-dependency-chain current-task deps-map nil)))
-
-        (with-current-buffer deps-buffer
+             (chain (tjp--get-chain task map nil))
+             (buffer (get-buffer-create
+                      (if successors "*TJ Successors*" "*TJ Dependencies*"))))
+        (with-current-buffer buffer
           (unless (derived-mode-p 'tjp-report-mode) (tjp-report-mode))
           (let ((inhibit-read-only t))
-          (erase-buffer)
-          (insert (format "Dependency Chain - %s\n"
-                         (if source-file (file-name-nondirectory source-file) "untitled")))
-          (insert "=====================================\n\n")
+            (erase-buffer)
+            (insert (format "%s - %s\n"
+                            (if successors "Successor Chain" "Dependency Chain")
+                            (if source-file
+                                (file-name-nondirectory source-file)
+                              "untitled")))
+            (insert "=====================================\n\n")
+            (if (null (cdr chain))
+                (progn
+                  (tjp--insert-task-link task loc-map source-buffer)
+                  (insert (if successors
+                              " has no successors.\n"
+                            " has no dependencies.\n")))
+              (tjp--insert-chain-tree chain loc-map source-buffer))
+            (insert (format "\nRead top down: each task %s the one above it.\n"
+                            (if successors "waits for" "is waited for by")))
+            (insert "Press RET or click on a task to jump to its definition.\n")
+            (goto-char (point-min))))
+        (display-buffer buffer)))))
 
-          (if (null (cdr chain))
-              (let ((line (tjp--lookup-task-line current-task loc-map)))
-                (if line
-                    (insert (tjp--make-clickable-task current-task line source-buffer))
-                  (insert (propertize current-task 'face 'font-lock-function-name-face)))
-                (insert " has no dependencies.\n"))
-            (tjp--insert-dependency-tree chain 0 loc-map source-buffer))
+(defun tjp-show-dependencies ()
+  "Show what the task at point waits for.
+Follows both `depends' and `precedes', which describe the same edge from
+its two ends."
+  (interactive)
+  (tjp--show-chain 'predecessors))
 
-          (insert "\nPress RET or click on a task to jump to its definition.\n")
-          (goto-char (point-min))))
-
-        (display-buffer deps-buffer)))))
+(defun tjp-show-successors ()
+  "Show what waits for the task at point.
+The mirror image of `tjp-show-dependencies': it follows the same
+`depends' and `precedes' edges in the other direction."
+  (interactive)
+  (tjp--show-chain 'successors))
 
 ;; ============================================================================
 ;; RESOURCE ALLOCATION DISPLAY
@@ -2096,6 +2165,113 @@ one to open.  The file is opened only after compilation succeeds."
          (message "Report output not found: %s" html-file))))))
 
 ;; ============================================================================
+;; FORMATTING
+;; ============================================================================
+
+;; tj3 has no formatter of its own: `--check-syntax' only reports errors,
+;; and an `export' report with `formats tjp' re-emits the *scheduled*
+;; model - comments gone, macros expanded, effort replaced by computed
+;; dates and bookings.  So the house style is applied here instead.
+
+(defcustom tjp-format-on-save nil
+  "When non-nil, run `tjp-format-buffer' before saving a TaskJuggler file."
+  :type 'boolean
+  :group 'tjp)
+
+(defun tjp--format-replace (regexp replacement bound &optional group)
+  "Replace REGEXP with REPLACEMENT up to BOUND, skipping strings and comments.
+BOUND is a marker so that it survives the edits.  GROUP is the subgroup
+whose position decides whether the match is inside a string: it defaults
+to 0, but a match that starts on a string's closing quote needs to be
+judged by a later group, since `syntax-ppss' still reports that position
+as being inside the string."
+  (goto-char (point-min))
+  (while (re-search-forward regexp bound t)
+    (unless (tjp--in-string-or-comment-p (match-beginning (or group 0)))
+      (replace-match replacement t nil))))
+
+(defun tjp--format-break-blocks (bound)
+  "Give the delimiters of every multi-line block their own line, up to BOUND.
+A block written entirely on one line - `resource r \"R\" { rate 10.0 }' -
+is left alone; it is only the half-and-half layout that is normalized."
+  (goto-char (point-min))
+  (while (re-search-forward "{" bound t)
+    (let ((open (1- (point))))
+      (unless (tjp--in-string-or-comment-p open)
+        (let ((close (ignore-errors (scan-lists open 1 0))))
+          (when (and close
+                     (> (line-number-at-pos close) (line-number-at-pos open))
+                     (save-excursion
+                       (skip-chars-forward " \t")
+                       (not (or (eolp) (looking-at "#\\|//")))))
+            (skip-chars-forward " \t")
+            (insert "\n"))))))
+  (goto-char (point-min))
+  (while (re-search-forward "}" bound t)
+    (let ((close (1- (point))))
+      (unless (tjp--in-string-or-comment-p close)
+        (let ((open (ignore-errors (scan-lists (point) -1 0))))
+          (when (and open
+                     (< (line-number-at-pos open) (line-number-at-pos close))
+                     (save-excursion
+                       (goto-char close)
+                       (skip-chars-backward " \t")
+                       (not (bolp))))
+            (goto-char close)
+            (insert "\n")
+            (forward-char 1)))))))
+
+(defun tjp-format-region (beg end)
+  "Reformat the TaskJuggler code between BEG and END.
+Applies the layout tj3's own files use: the delimiters of a multi-line
+block on their own lines, one space before a block opener, `, ' between
+the items of a list, no trailing whitespace, and one indentation level
+per nesting level.  A block written entirely on one line is left as it
+is, and so are the contents of `-8<- ... ->8-' strings and comments."
+  (interactive "r")
+  (let ((bound (copy-marker end t))
+        (start (copy-marker beg)))
+    (atomic-change-group
+      (save-excursion
+        (save-restriction
+          (narrow-to-region start bound)
+          ;; Multi-line blocks get their delimiters to themselves first, so
+          ;; that the rules below see the final line structure.
+          (tjp--format-break-blocks bound)
+          ;; A block opener sits at the end of its line, one space after the
+          ;; header.  `$' is excluded so that a ${macro} call is left alone.
+          (tjp--format-replace "\\([^ \t\n$]\\)[ \t]*\\([{[]\\)[ \t]*$"
+                               "\\1 \\2" bound 2)
+          ;; Items of a list are separated by ", ".  A comma at the end of a
+          ;; line continues the list onto the next one and is left alone.
+          (tjp--format-replace "[ \t]*,[ \t]*\\([^ \t\n]\\)" ", \\1" bound)
+          ;; No trailing whitespace, except inside a multi-line string.
+          (goto-char (point-min))
+          (while (re-search-forward "[ \t]+$" bound t)
+            (unless (tjp--in-string-p (match-beginning 0))
+              (delete-region (match-beginning 0) (match-end 0))))
+          (indent-region (point-min) (point-max)))))
+    (set-marker bound nil)
+    (set-marker start nil)))
+
+(defun tjp-format-buffer ()
+  "Reformat the whole buffer with `tjp-format-region'.
+Also gives the file the single trailing newline tj3 expects."
+  (interactive)
+  (tjp-format-region (point-min) (point-max))
+  (save-excursion
+    (goto-char (point-max))
+    (skip-chars-backward " \t\n")
+    (unless (eobp)
+      (delete-region (point) (point-max)))
+    (insert "\n")))
+
+(defun tjp-format-on-save ()
+  "Format the buffer before saving when `tjp-format-on-save' is non-nil."
+  (when (and tjp-format-on-save (derived-mode-p 'tjp-mode))
+    (tjp-format-buffer)))
+
+;; ============================================================================
 ;; HELPER FUNCTIONS
 ;; ============================================================================
 
@@ -2247,6 +2423,9 @@ whichever command the running Emacs provides.")
     (define-key map (kbd "C-c C-R") 'tjp-insert-report)
     (define-key map (kbd "C-c C-d") 'tjp-insert-date-prompt)
 
+    ;; Formatting
+    (define-key map (kbd "C-c C-q") 'tjp-format-buffer)
+
     ;; Structure and Analysis
     (define-key map (kbd "C-c C-s") 'tjp-show-structure)
     (define-key map (kbd "C-c C-=") 'tjp-show-statistics)
@@ -2259,6 +2438,7 @@ whichever command the running Emacs provides.")
 
     ;; Analysis
     (define-key map (kbd "C-c C-y") 'tjp-show-dependencies)
+    (define-key map (kbd "C-c C-u") 'tjp-show-successors)
     (define-key map (kbd "C-c C-l") 'tjp-show-resource-allocation)
 
     map)
@@ -2289,8 +2469,10 @@ Key bindings:
   (setq-local syntax-propertize-function #'tjp-syntax-propertize)
   (setq-local parse-sexp-lookup-properties t)
 
-  ;; Indentation
+  ;; Indentation.  TaskJuggler's own vim syntax file sets expandtab, and
+  ;; the files tj3 generates are indented with spaces; follow suit.
   (setq-local indent-line-function 'tjp-indent-line)
+  (setq-local indent-tabs-mode nil)
   (setq-local electric-indent-chars
               (append "{}[]" (default-value 'electric-indent-chars)))
 
@@ -2327,8 +2509,9 @@ Key bindings:
   ;; Completion at point
   (add-hook 'completion-at-point-functions #'tjp-completion-at-point nil t)
 
-  ;; Cleanup whitespace on save
+  ;; Cleanup whitespace on save, and optionally reformat
   (add-hook 'before-save-hook 'tjp-cleanup-whitespace nil t)
+  (add-hook 'before-save-hook 'tjp-format-on-save nil t)
 
   ;; Auto-validation.  The hook itself checks `tjp-auto-validate', so
   ;; toggling the option takes effect without reopening the file.
